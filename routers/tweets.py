@@ -1,45 +1,38 @@
 from fastapi import APIRouter
-import requests
-from db.models.tweet import Tweet
 from db.client import db_client
 from fastapi import status
+from ntscraper import Nitter
+from pysentimiento import create_analyzer
+import json
+
 
 router=APIRouter(prefix="/tweets",tags=["tweets"],responses={404:{"message":"No encontrado"}})
 
+scraper = Nitter(0)
+
+analyzer = create_analyzer(task="sentiment", lang="es")
+
+
 #Buscador de Tweets
-@router.get("/",status_code=status.HTTP_201_CREATED)
-async def tweets(numero: int, busqueda: str):
-    
-    twitter_data = []
-    
-    payload = {
-        'api_key': '321700ac46a41ee97ced9b318a8201fb',
-        'query': busqueda,
-        'num': numero
-    }
+@router.get("/busqueda", status_code=status.HTTP_201_CREATED)
+async def tweets(busqueda: str, metodo: str, numero: int):
 
-    response = requests.get('https://api.scraperapi.com/structured/twitter/search', params=payload)
-    data = response.json()
-    tweets = data['organic_results']
+    twitter_data = get_tweets(busqueda, metodo, numero)
 
-    for tweet in tweets:
-        twitter_data.append(Tweet(
-            titulo=tweet.get("title", ""),
-            contenido=tweet.get("snippet", ""),
-            link=tweet.get("link", "")
-        ))
-    
-    resultados = {"busqueda": busqueda, "tweets": [tweet.dict() for tweet in twitter_data]}
+    resultados = {"busqueda": busqueda, "metodo": metodo, "tweets": twitter_data}
 
     try:
+        with open(f'data_{busqueda}_{metodo}_{numero}.json', 'w') as json_file:
+            json.dump(resultados, json_file, indent=4)
         db_client.tweets.insert_one(resultados)
-        return {"busqueda": busqueda, "tweets":twitter_data}
-    except:
-        return {"error":"No se pudo encontrar los tweets"}
+        return {"busqueda": busqueda,"metodo":metodo, "tweets": twitter_data}
+    except Exception as e:
+        return {"error": f"No se pudo encontrar los tweets: {e}"}
+
 
 
 #Trae todos los tweets
-@router.get("/todos",status_code=status.HTTP_202_ACCEPTED)
+@router.get("/",status_code=status.HTTP_202_ACCEPTED)
 async def todos():
     
     try:
@@ -49,3 +42,21 @@ async def todos():
         return todos_los_tweets
     except:
         return {"error": "No se pudieron obtener los tweets de la base de datos"}
+ 
+ 
+#Metodo que me trae los tweets  
+def get_tweets(name, modes, no):
+    tweets = scraper.get_tweets(name, mode=modes, number=no)
+    final_tweets = []
+    for x in tweets['tweets']:
+        pos = analyzer.predict(x['text']).output
+        data = {
+            'link': x['link'],
+            'text': x['text'],
+            'likes': x['stats']['likes'],
+            'commentarios': x['stats']['comments'],
+            'retweets': x['stats']['retweets'],
+            'sentimiento': pos
+        }
+        final_tweets.append(data)
+    return final_tweets
